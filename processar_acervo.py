@@ -1,26 +1,40 @@
 #!/usr/bin/env python3
 """
-Conversão de acervo de cartório: TIFF/PDF -> PDF pesquisável limpo + OCR + resumo.
+Conversão de acervo de cartório: TIFF/PDF -> PDF pesquisável limpo + OCR + campos extraídos.
+
+Tudo roda localmente: nenhum texto ou imagem sai do servidor.
 
 Para cada documento encontrado na pasta de entrada:
   1. Lê todas as páginas (TIFF multipágina ou PDF).
   2. Faz OCR (Tesseract, português).
   3. Detecta e remove as páginas de "flash" de microfilmagem.
   4. Gera um PDF limpo e pesquisável (imagem + camada de texto invisível).
-  5. Gera um resumo estruturado do documento com Claude (opcional).
+  5. Extrai campos automaticamente (CPF/CNPJ, datas, livro, folha, matrícula, valores...).
   6. Registra tudo num relatório CSV para auditoria.
 
-O processamento é retomável: documentos já processados (com .json na saída)
-são pulados, então dá para interromper e rodar de novo.
+Saída (espelha as subpastas da entrada, ex.: 0000-0999/):
+  saida/pdf/...      PDFs limpos
+  saida/ocr/...      texto do OCR
+  saida/resumos/...  JSON com campos extraídos e análise das páginas
+  saida/removidas/.. miniaturas das páginas tiradas (com --salvar-removidas)
+
+O resumo em texto por IA local é uma etapa separada (resumir_local.py), para o
+OCR não ficar esperando a IA. O processamento é retomável: documentos com JSON
+em saida/resumos são pulados.
 """
 from __future__ import annotations
+
+import os
+
+# O Tesseract abre várias threads por padrão; com vários processos em paralelo
+# isso faz eles brigarem pela CPU e fica MUITO mais lento. 1 thread por processo.
+os.environ.setdefault("OMP_THREAD_LIMIT", "1")
 
 import argparse
 import csv
 import io
 import json
 import logging
-import os
 import re
 import sys
 import time
@@ -33,6 +47,8 @@ import pymupdf as fitz
 import numpy as np
 import pytesseract
 from PIL import Image, ImageOps, ImageSequence
+
+from extracao import extrair_campos
 
 Image.MAX_IMAGE_PIXELS = None  # digitalizações grandes são legítimas
 
@@ -135,18 +151,35 @@ def analisar_pagina(img: Image.Image, indice: int, lang: str, cfg: ConfigFlash) 
     a = np.asarray(g)
     tinta = float((a < 128).mean())
 
-    dados = pytesseract.image_to_data(g, lang=lang, output_type=pytesseract.Output.DICT)
-    alturas, palavras_validas = [], []
-    for txt, conf, h in zip(dados["text"], dados["conf"], dados["height"]):
-        try:
-            conf = float(conf)
-        except (TypeError, ValueError):
-            conf = -1
-        if txt.strip() and conf >= 40:
-            palavras_validas.append(txt)
-            alturas.append(h)
-    texto = pytesseract.image_to_string(g, lang=lang)
-    alt_med = float(np.median(alturas)) / g.height if alturas else 0.0
+    # Página quase toda preta ou em branco: não precisa de OCR (e o Tesseract
+    # pode demorar muito em página preta).
+    if tinta > 0.85 or tinta < 0.003:
+        texto, palavras_validas, alt_med = "", [], 0.0
+    else:
+        dados = pytesseract.image_to_data(g, lang=lang, output_type=pytesseract.Output.DICT)
+        alturas, palavras_validas = [], []
+        linhas: dict[tuple, list[str]] = {}
+        for i, txt in enumerate(dados["text"]):
+            if not txt.strip():
+                continue
+            chave = (dados["block_num"][i], dados["par_num"][i], dados["line_num"][i])
+            linhas.setdefault(chave, []).append(txt)
+            try:
+                conf = float(dados["conf"][i])
+            except (TypeError, ValueError):
+                conf = -1
+            if conf >= 40:
+                palavras_validas.append(txt)
+                alturas.append(dados["height"][i])
+        # Remonta o texto linha a linha, separando parágrafos/blocos com linha em branco
+        partes, anterior = [], None
+        for chave, palavras in linhas.items():
+            if anterior is not None and chave[:2] != anterior[:2]:
+                partes.append("")
+            partes.append(" ".join(palavras))
+            anterior = chave
+        texto = "\n".join(partes)
+        alt_med = float(np.median(alturas)) / g.height if alturas else 0.0
 
     pont, motivos = 0.0, []
     norm = normalizar(texto)
@@ -204,85 +237,6 @@ def gerar_pdf(paginas: list[Image.Image], destino: Path, lang: str) -> None:
 
 
 # ----------------------------------------------------------------------------
-# Resumo com Claude
-# ----------------------------------------------------------------------------
-SCHEMA_RESUMO = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["tipo_documento", "resumo", "partes", "datas", "referencias",
-                 "imovel", "valores", "legibilidade", "observacoes"],
-    "properties": {
-        "tipo_documento": {"type": "string", "description": "Ex.: escritura de compra e venda, procuração, matrícula, certidão, averbação, registro de nascimento..."},
-        "resumo": {"type": "string", "description": "Resumo objetivo em 3 a 6 frases."},
-        "partes": {"type": "array", "items": {
-            "type": "object", "additionalProperties": False,
-            "required": ["nome", "papel", "documento"],
-            "properties": {
-                "nome": {"type": "string"},
-                "papel": {"type": "string", "description": "Ex.: outorgante, outorgado, comprador, vendedor, requerente"},
-                "documento": {"type": "string", "description": "CPF/CNPJ/RG se constar, senão vazio"},
-            }}},
-        "datas": {"type": "array", "items": {
-            "type": "object", "additionalProperties": False,
-            "required": ["data", "evento"],
-            "properties": {"data": {"type": "string", "description": "AAAA-MM-DD quando possível"},
-                           "evento": {"type": "string"}}}},
-        "referencias": {"type": "object", "additionalProperties": False,
-            "required": ["livro", "folha", "numero_ato", "matricula", "protocolo"],
-            "properties": {k: {"type": "string"} for k in
-                           ["livro", "folha", "numero_ato", "matricula", "protocolo"]}},
-        "imovel": {"type": "string", "description": "Descrição/endereço do imóvel se houver, senão vazio"},
-        "valores": {"type": "array", "items": {"type": "string"}},
-        "legibilidade": {"type": "string", "enum": ["boa", "regular", "ruim"]},
-        "observacoes": {"type": "string", "description": "Dúvidas, trechos ilegíveis, possíveis erros de OCR"},
-    },
-}
-
-PROMPT_SISTEMA = """Você analisa documentos digitalizados de um cartório brasileiro para migração de sistema.
-Recebe o texto obtido por OCR (pode conter erros de leitura) e deve extrair as informações pedidas.
-Regras:
-- Use apenas o que está no texto. Não invente nomes, números ou datas.
-- Campo sem informação: string vazia ou lista vazia.
-- Se um trecho estiver ilegível ou ambíguo por causa do OCR, diga isso em "observacoes".
-- Responda em português."""
-
-MODELOS_COM_FALLBACK = {"claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5",
-                        "claude-fable-5-2", "claude-fable-5-1"}
-
-
-def resumir(texto: str, nome_arquivo: str, modelo: str, max_chars: int) -> dict:
-    import anthropic
-
-    client = anthropic.Anthropic()
-    if len(texto) > max_chars:
-        log.warning("%s: texto com %d caracteres; enviando os primeiros %d",
-                    nome_arquivo, len(texto), max_chars)
-        texto = texto[:max_chars] + "\n[... texto truncado ...]"
-
-    kwargs = dict(
-        model=modelo,
-        max_tokens=8000,
-        system=PROMPT_SISTEMA,
-        output_config={"effort": "low",
-                       "format": {"type": "json_schema", "schema": SCHEMA_RESUMO}},
-        messages=[{"role": "user", "content":
-                   f"Arquivo: {nome_arquivo}\n\n<texto_ocr>\n{texto}\n</texto_ocr>"}],
-    )
-    if modelo in MODELOS_COM_FALLBACK:
-        resp = client.beta.messages.create(
-            betas=["server-side-fallback-2026-07-01"], fallbacks="default", **kwargs)
-    else:
-        resp = client.messages.create(**kwargs)
-
-    if resp.stop_reason == "refusal":
-        raise RuntimeError(f"modelo recusou o pedido: {getattr(resp, 'stop_details', None)}")
-    if resp.stop_reason == "max_tokens":
-        raise RuntimeError("resposta cortada por max_tokens")
-    txt = "".join(b.text for b in resp.content if b.type == "text")
-    return json.loads(txt)
-
-
-# ----------------------------------------------------------------------------
 # Processamento de um documento
 # ----------------------------------------------------------------------------
 @dataclass
@@ -291,21 +245,34 @@ class Opcoes:
     saida: Path
     lang: str
     dpi_pdf: int
-    resumo: bool
-    modelo: str
-    max_chars: int
     salvar_removidas: bool
     somente_detectar: bool
     cfg_flash: ConfigFlash
 
 
+def numero_do_arquivo(caminho: Path) -> int | None:
+    """Número do protocolo/registro tirado do nome do arquivo (maior sequência de dígitos)."""
+    grupos = re.findall(r"\d+", caminho.stem)
+    return int(max(grupos, key=len)) if grupos else None
+
+
+def caminhos_saida(rel: Path, saida: Path) -> dict[str, Path]:
+    sem_ext = rel.with_suffix("")
+    return {
+        "pdf": saida / "pdf" / sem_ext.with_suffix(".pdf"),
+        "ocr": saida / "ocr" / sem_ext.with_suffix(".txt"),
+        "json": saida / "resumos" / sem_ext.with_suffix(".json"),
+        "removidas": saida / "removidas" / sem_ext,
+    }
+
+
 def processar_documento(caminho: Path, op: Opcoes) -> dict:
     inicio = time.time()
     rel = caminho.relative_to(op.entrada)
-    base = op.saida / rel.with_suffix("")
-    reg = {"arquivo": str(rel), "status": "ok", "paginas_originais": 0,
-           "paginas_removidas": "", "paginas_duvida": "", "pdf": "", "tipo_documento": "",
-           "resumo": "", "erro": "", "segundos": 0}
+    cam = caminhos_saida(rel, op.saida)
+    reg = {"arquivo": str(rel), "numero": numero_do_arquivo(caminho), "status": "ok",
+           "paginas_originais": 0, "paginas_removidas": "", "paginas_duvida": "", "pdf": "",
+           "tipo_provavel": "", "erro": "", "segundos": 0}
     try:
         paginas = [preparar_para_ocr(p) for p in carregar_paginas(caminho, op.dpi_pdf)]
         reg["paginas_originais"] = len(paginas)
@@ -315,49 +282,44 @@ def processar_documento(caminho: Path, op: Opcoes) -> dict:
         duvidas = [a for a in analises if a.duvida]
         reg["paginas_removidas"] = " ".join(str(a.indice) for a in removidas)
         reg["paginas_duvida"] = " ".join(str(a.indice) for a in duvidas)
+        if duvidas:
+            reg["status"] = "revisar"
 
-        base.parent.mkdir(parents=True, exist_ok=True)
         if op.salvar_removidas and removidas:
-            pasta = base.parent / f"{base.name}_removidas"
-            pasta.mkdir(exist_ok=True)
+            cam["removidas"].mkdir(parents=True, exist_ok=True)
             for a in removidas:
                 th = paginas[a.indice - 1].convert("L")
                 th.thumbnail((800, 800))
-                th.save(pasta / f"pag{a.indice:04d}.png")
+                th.save(cam["removidas"] / f"pag{a.indice:04d}.png")
 
         mantidas = [(p, a) for p, a in zip(paginas, analises) if not a.flash]
         if not mantidas:
             reg["status"] = "todas_paginas_removidas"
 
         texto = "\n\n".join(f"===== Página {a.indice} =====\n{a.texto.strip()}" for _, a in mantidas)
+        campos = extrair_campos(texto)
+        reg["tipo_provavel"] = campos["tipo_provavel"]
 
         if not op.somente_detectar:
             if mantidas:
-                pdf = base.with_suffix(".pdf")
-                gerar_pdf([p for p, _ in mantidas], pdf, op.lang)
-                reg["pdf"] = str(pdf.relative_to(op.saida))
-            base.with_suffix(".txt").write_text(texto, encoding="utf-8")
-
-        resumo = None
-        if op.resumo and not op.somente_detectar and texto.strip():
-            try:
-                resumo = resumir(texto, str(rel), op.modelo, op.max_chars)
-                reg["tipo_documento"] = resumo.get("tipo_documento", "")
-                reg["resumo"] = resumo.get("resumo", "")
-            except Exception as e:  # o OCR/PDF continuam válidos mesmo se o resumo falhar
-                reg["status"] = "ok_sem_resumo"
-                reg["erro"] = f"resumo: {e}"
-                log.error("%s: falha no resumo: %s", rel, e)
-
-        meta = {
-            "arquivo_origem": str(rel),
-            "paginas": [{k: v for k, v in asdict(a).items() if k != "texto"} for a in analises],
-            "resumo": resumo,
-            "registro": reg,
-        }
-        if not op.somente_detectar:
-            base.with_suffix(".json").write_text(
-                json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+                gerar_pdf([p for p, _ in mantidas], cam["pdf"], op.lang)
+                reg["pdf"] = str(cam["pdf"].relative_to(op.saida))
+            cam["ocr"].parent.mkdir(parents=True, exist_ok=True)
+            cam["ocr"].write_text(texto, encoding="utf-8")
+            meta = {
+                "arquivo_origem": str(rel),
+                "numero": reg["numero"],
+                "pasta": str(rel.parent),
+                "pdf": reg["pdf"],
+                "ocr": str(cam["ocr"].relative_to(op.saida)),
+                "paginas": [{k: v for k, v in asdict(a).items() if k != "texto"} for a in analises],
+                "campos": campos,
+                "resumo_ia": None,
+                "registro": reg,
+                "processado_em": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            }
+            cam["json"].parent.mkdir(parents=True, exist_ok=True)
+            cam["json"].write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as e:
         reg["status"] = "erro"
         reg["erro"] = f"{type(e).__name__}: {e}"
@@ -392,9 +354,6 @@ def main(argv=None) -> int:
     ap.add_argument("entrada", type=Path, help="Pasta com os TIFF/PDF (busca em subpastas)")
     ap.add_argument("saida", type=Path, help="Pasta onde gravar PDFs, textos e relatório")
     ap.add_argument("--incluir-pdf", action="store_true", help="Processar também os PDFs (padrão: só TIFF)")
-    ap.add_argument("--sem-resumo", action="store_true", help="Não chamar o Claude (só OCR + PDF)")
-    ap.add_argument("--modelo", default="claude-opus-5-5", help="Modelo do Claude para o resumo")
-    ap.add_argument("--max-chars", type=int, default=400_000, help="Limite de caracteres enviados por documento")
     ap.add_argument("--flash-ref", type=Path, help="Pasta com exemplos de páginas de flash (melhora muito a detecção)")
     ap.add_argument("--palavras-flash", type=Path, help="Arquivo .txt com palavras-chave de flash (uma por linha)")
     ap.add_argument("--manter-brancas", action="store_true", help="Não remover páginas em branco")
@@ -421,8 +380,7 @@ def main(argv=None) -> int:
 
     op = Opcoes(
         entrada=args.entrada.resolve(), saida=args.saida.resolve(), lang=args.lang,
-        dpi_pdf=args.dpi_pdf, resumo=not args.sem_resumo, modelo=args.modelo,
-        max_chars=args.max_chars, salvar_removidas=args.salvar_removidas,
+        dpi_pdf=args.dpi_pdf, salvar_removidas=args.salvar_removidas,
         somente_detectar=args.somente_detectar,
         cfg_flash=ConfigFlash(palavras=palavras, hashes_referencia=carregar_referencias(args.flash_ref),
                               limiar=args.limiar, limiar_duvida=args.limiar / 2,
@@ -432,7 +390,7 @@ def main(argv=None) -> int:
     arquivos = listar_arquivos(op.entrada, args.incluir_pdf)
     if not args.reprocessar and not args.somente_detectar:
         arquivos = [a for a in arquivos
-                    if not (op.saida / a.relative_to(op.entrada)).with_suffix(".json").exists()]
+                    if not caminhos_saida(a.relative_to(op.entrada), op.saida)["json"].exists()]
     if args.limite:
         arquivos = arquivos[: args.limite]
     log.info("%d arquivo(s) para processar com %d worker(s)", len(arquivos), args.workers)
@@ -440,8 +398,8 @@ def main(argv=None) -> int:
     nome_rel = "relatorio_deteccao.csv" if args.somente_detectar else "relatorio.csv"
     rel_path = op.saida / nome_rel
     novo = not rel_path.exists() or args.somente_detectar
-    campos = ["arquivo", "status", "paginas_originais", "paginas_removidas", "paginas_duvida",
-              "pdf", "tipo_documento", "resumo", "erro", "segundos"]
+    campos = ["arquivo", "numero", "status", "paginas_originais", "paginas_removidas",
+              "paginas_duvida", "pdf", "tipo_provavel", "erro", "segundos"]
     contagem = {"ok": 0, "erro": 0}
     with open(rel_path, "w" if novo else "a", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=campos, delimiter=";")

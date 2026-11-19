@@ -1,72 +1,62 @@
-# Conversão de acervo do cartório (TIFF/PDF → PDF limpo + OCR + resumo)
+# Conversão do acervo do cartório
 
-Script que percorre uma pasta de imagens digitalizadas e, para cada documento:
+Converte as imagens digitalizadas (TIFF/PDF) para o sistema novo, **100% local** (LGPD):
 
-1. Lê todas as páginas (TIFF multipágina; PDF opcional com `--incluir-pdf`).
-2. Faz OCR em português (Tesseract).
-3. **Detecta e remove as páginas de flash** da microfilmagem (também páginas pretas e em branco).
-4. Gera um **PDF limpo e pesquisável** (imagem + texto invisível, dá para buscar/copiar).
-5. Gera um **resumo estruturado** com Claude (tipo do ato, partes, datas, livro/folha, matrícula, imóvel, valores).
-6. Registra tudo no `relatorio.csv` (abre no Excel), indicando páginas removidas e páginas em dúvida.
+1. **OCR** em português (Tesseract).
+2. **Remove as páginas de flash** da microfilmagem, além das páginas pretas e em branco.
+3. Gera **PDF limpo e pesquisável**.
+4. **Extrai campos** sem IA: CPF/CNPJ (validados), datas, livro, folha, matrícula, protocolo, valores, tipo do ato.
+5. **Resumo em texto** opcional com IA rodando no próprio servidor (Ollama).
+6. **Importa tudo no PostgreSQL** (`conversao.documento`) com busca por texto.
+7. **Inventário** dos números com e sem imagem em cada milhar.
 
-## Instalação
+Montagem do servidor passo a passo: **[docs/servidor.md](docs/servidor.md)**.
+
+## Arquivos
+
+| Arquivo | Etapa |
+|---|---|
+| `rodar_lote.sh` | Roda todas as etapas abaixo em segundo plano (`iniciar` / `status` / `parar`) |
+| `inventario.py` | Lista números com/sem imagem por milhar |
+| `processar_acervo.py` | OCR, remoção de flash, PDF, extração de campos |
+| `extracao.py` | Regras de extração de campos (usado pelo anterior) |
+| `resumir_local.py` | Resumo por IA local (Ollama) — etapa separada, retomável |
+| `importar_postgres.py` | Carrega os resultados no PostgreSQL (pode repetir) |
+| `sql/schema.sql` | Tabela `conversao.documento` |
+
+## Uso manual
 
 ```bash
-# Ubuntu/Debian
-sudo apt install tesseract-ocr tesseract-ocr-por
-# Windows: instale o Tesseract (UB Mannheim) com o idioma Portuguese e coloque no PATH
+# calibrar a detecção de flash numa amostra (não grava PDF)
+python3 processar_acervo.py /acervo/entrada /acervo/saida --somente-detectar --limite 300 --salvar-removidas
 
-pip install -r requirements.txt
-export ANTHROPIC_API_KEY=...   # só se for gerar resumos
+# processar
+python3 processar_acervo.py /acervo/entrada /acervo/saida --flash-ref /acervo/flash_exemplos --salvar-removidas
+python3 resumir_local.py /acervo/saida --modelo qwen2.5:7b      # opcional
+python3 importar_postgres.py /acervo/saida --dsn postgresql:///acervo
 ```
 
-## Uso recomendado (em etapas)
-
-```bash
-# 1) Calibrar a detecção de flash numa amostra (não grava PDF, só o relatório)
-python processar_acervo.py /acervo /saida --somente-detectar --limite 300 --salvar-removidas
-
-# 2) Conferir relatorio_deteccao.csv e as miniaturas em *_removidas/.
-#    Se tiver flashes padronizados, copie alguns exemplos para uma pasta e use --flash-ref.
-
-# 3) Rodar de verdade
-python processar_acervo.py /acervo /saida --flash-ref ./exemplos_flash --salvar-removidas
-```
-
-Saída, espelhando a estrutura de pastas da entrada:
+Saída (espelha as pastas de milhar da entrada):
 
 ```
-saida/livro01/doc001.pdf        PDF limpo e pesquisável
-saida/livro01/doc001.txt        texto do OCR, por página
-saida/livro01/doc001.json       resumo + análise de cada página (motivo da remoção)
-saida/livro01/doc001_removidas/ miniaturas das páginas tiradas (com --salvar-removidas)
-saida/relatorio.csv             uma linha por documento
+saida/pdf/0000-0999/000123.pdf       PDF limpo e pesquisável
+saida/ocr/0000-0999/000123.txt       texto do OCR
+saida/resumos/0000-0999/000123.json  campos, resumo IA, análise de cada página
+saida/removidas/0000-0999/000123/    miniaturas das páginas tiradas
+saida/relatorio.csv                  uma linha por documento (status "revisar" = conferir)
 ```
 
-O processamento é **retomável**: se parar, rode de novo e ele pula o que já tem `.json`.
+Tudo é **retomável**: interrompeu, roda de novo e continua de onde parou.
 
-## Como o flash é detectado
+## Detecção de flash
 
-Cada página recebe uma pontuação; com pontuação ≥ 1,0 ela é removida, entre 0,5 e 1,0 fica
-marcada como **dúvida** no relatório (mantida no PDF) para revisão humana.
+Cada página recebe pontos; ≥ 1,0 é removida, entre 0,5 e 1,0 fica no PDF e o documento vai como `revisar`.
 
 | Sinal | Pontos |
 |---|---|
-| Texto com palavras de microfilmagem ("início de rolo", "fim de rolo", "microfilmagem"...) em página com pouco texto | 1,0 |
-| Visualmente parecida com um exemplo de flash em `--flash-ref` | 1,0 |
-| Poucas palavras em letra muito grande (ficha de identificação) | 0,6 |
-| Página quase toda preta / página em branco | 1,0 |
+| Palavras de microfilmagem ("início de rolo", "fim de rolo"...) em página com pouco texto | 1,0 |
+| Parecida com um exemplo em `--flash-ref` | 1,0 |
+| Poucas palavras em letra muito grande | 0,6 |
+| Página quase toda preta / em branco | 1,0 |
 
-As palavras-chave podem ser trocadas com `--palavras-flash arquivo.txt` (uma por linha).
-Páginas em branco podem ser mantidas com `--manter-brancas`.
-
-## Opções principais
-
-| Opção | Descrição |
-|---|---|
-| `--incluir-pdf` | Processa também os PDFs (padrão: só TIFF) |
-| `--sem-resumo` | Só OCR + PDF, sem chamar o Claude |
-| `--modelo` | Modelo do resumo (padrão `claude-opus-5-5`; `claude-haiku-5-5` sai bem mais barato) |
-| `--workers N` | Processos em paralelo (padrão: nº de CPUs − 1) |
-| `--limite N` | Processa só N arquivos (para teste) |
-| `--reprocessar` | Refaz mesmo o que já foi processado |
+Ajustes: `--palavras-flash arquivo.txt`, `--manter-brancas`, `--limiar`.
