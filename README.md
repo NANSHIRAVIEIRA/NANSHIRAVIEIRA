@@ -12,6 +12,19 @@ Converte as imagens digitalizadas (TIFF/PDF) para o sistema novo, **100% local**
 
 Montagem do servidor passo a passo: **[docs/servidor.md](docs/servidor.md)**.
 
+## Identificação dos documentos
+
+A numeração foi zerada em 2004 e TD/PJ têm numerações próprias, então o número sozinho
+não identifica o documento. A chave é **especialidade + série + número**, lida das pastas:
+
+```
+entrada/TD/2003/0000-0999/000500.tif  ->  TD-2003-0000500  (codigo_numerico 20030000500)
+entrada/TD/2004/0000-0999/000500.tif  ->  TD-2004-0000500  (codigo_numerico 20040000500)
+```
+
+`codigo_numerico` = série × 10.000.000 + número (até 9.999.999 por série; exige BIGINT).
+Detalhes em `identificacao.py`.
+
 ## Arquivos
 
 | Arquivo | Etapa |
@@ -19,6 +32,7 @@ Montagem do servidor passo a passo: **[docs/servidor.md](docs/servidor.md)**.
 | `rodar_lote.sh` | Roda todas as etapas abaixo em segundo plano (`iniciar` / `status` / `parar`) |
 | `inventario.py` | Lista números com/sem imagem por milhar |
 | `processar_acervo.py` | OCR, remoção de flash, PDF, extração de campos |
+| `identificacao.py` | Especialidade/série/número a partir das pastas |
 | `extracao.py` | Regras de extração de campos (usado pelo anterior) |
 | `resumir_local.py` | Resumo por IA local (Ollama) — etapa separada, retomável |
 | `importar_postgres.py` | Carrega os resultados no PostgreSQL (pode repetir) |
@@ -36,13 +50,13 @@ python3 resumir_local.py /acervo/saida --modelo qwen2.5:7b      # opcional
 python3 importar_postgres.py /acervo/saida --dsn postgresql:///acervo
 ```
 
-Saída (espelha as pastas de milhar da entrada):
+Saída (espelha as pastas da entrada):
 
 ```
-saida/pdf/0000-0999/000123.pdf       PDF limpo e pesquisável
-saida/ocr/0000-0999/000123.txt       texto do OCR
-saida/resumos/0000-0999/000123.json  campos, resumo IA, análise de cada página
-saida/removidas/0000-0999/000123/    miniaturas das páginas tiradas
+saida/pdf/TD/2004/0000-0999/000123.pdf       PDF limpo e pesquisável
+saida/ocr/TD/2004/0000-0999/000123.txt       texto do OCR
+saida/resumos/TD/2004/0000-0999/000123.json  campos, resumo IA, análise de cada página
+saida/removidas/TD/2004/0000-0999/000123/    miniaturas das páginas tiradas
 saida/relatorio.csv                  uma linha por documento (status "revisar" = conferir)
 ```
 

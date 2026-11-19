@@ -12,7 +12,10 @@ Para cada documento encontrado na pasta de entrada:
   5. Extrai campos automaticamente (CPF/CNPJ, datas, livro, folha, matrícula, valores...).
   6. Registra tudo num relatório CSV para auditoria.
 
-Saída (espelha as subpastas da entrada, ex.: 0000-0999/):
+Organize a entrada por especialidade e série (ver identificacao.py):
+  entrada/TD/2003/0000-0999/000500.tif
+
+Saída (espelha as subpastas da entrada):
   saida/pdf/...      PDFs limpos
   saida/ocr/...      texto do OCR
   saida/resumos/...  JSON com campos extraídos e análise das páginas
@@ -49,6 +52,7 @@ import pytesseract
 from PIL import Image, ImageOps, ImageSequence
 
 from extracao import extrair_campos
+from identificacao import identificar
 
 Image.MAX_IMAGE_PIXELS = None  # digitalizações grandes são legítimas
 
@@ -250,12 +254,6 @@ class Opcoes:
     cfg_flash: ConfigFlash
 
 
-def numero_do_arquivo(caminho: Path) -> int | None:
-    """Número do protocolo/registro tirado do nome do arquivo (maior sequência de dígitos)."""
-    grupos = re.findall(r"\d+", caminho.stem)
-    return int(max(grupos, key=len)) if grupos else None
-
-
 def caminhos_saida(rel: Path, saida: Path) -> dict[str, Path]:
     sem_ext = rel.with_suffix("")
     return {
@@ -270,7 +268,8 @@ def processar_documento(caminho: Path, op: Opcoes) -> dict:
     inicio = time.time()
     rel = caminho.relative_to(op.entrada)
     cam = caminhos_saida(rel, op.saida)
-    reg = {"arquivo": str(rel), "numero": numero_do_arquivo(caminho), "status": "ok",
+    ident = identificar(rel)
+    reg = {"arquivo": str(rel), **ident, "status": "ok",
            "paginas_originais": 0, "paginas_removidas": "", "paginas_duvida": "", "pdf": "",
            "tipo_provavel": "", "erro": "", "segundos": 0}
     try:
@@ -308,7 +307,7 @@ def processar_documento(caminho: Path, op: Opcoes) -> dict:
             cam["ocr"].write_text(texto, encoding="utf-8")
             meta = {
                 "arquivo_origem": str(rel),
-                "numero": reg["numero"],
+                **ident,
                 "pasta": str(rel.parent),
                 "pdf": reg["pdf"],
                 "ocr": str(cam["ocr"].relative_to(op.saida)),
@@ -398,7 +397,7 @@ def main(argv=None) -> int:
     nome_rel = "relatorio_deteccao.csv" if args.somente_detectar else "relatorio.csv"
     rel_path = op.saida / nome_rel
     novo = not rel_path.exists() or args.somente_detectar
-    campos = ["arquivo", "numero", "status", "paginas_originais", "paginas_removidas",
+    campos = ["arquivo", "especialidade", "serie", "numero", "codigo", "codigo_numerico", "status", "paginas_originais", "paginas_removidas",
               "paginas_duvida", "pdf", "tipo_provavel", "erro", "segundos"]
     contagem = {"ok": 0, "erro": 0}
     with open(rel_path, "w" if novo else "a", newline="", encoding="utf-8-sig") as f:

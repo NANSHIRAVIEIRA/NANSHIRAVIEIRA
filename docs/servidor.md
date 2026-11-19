@@ -96,7 +96,18 @@ ollama pull qwen2.5:7b          # ~5 GB; testaremos outros modelos numa amostra
 
 ## 8. Rodar um lote
 
-1. Copie as pastas de milhar (`0000-0999`, `1000-1999`, ...) para `Z:\entrada`.
+1. Copie as pastas de milhar para `Z:\entrada`, **separadas por especialidade e série**:
+
+   ```
+   Z:\entrada\TD\2003\0000-0999\...   numeração de jun/2003 (antes de zerar)
+   Z:\entrada\TD\2004\0000-0999\...   numeração de 2004 em diante
+   Z:\entrada\PJ\2003\...
+   Z:\entrada\PJ\2004\...
+   ```
+
+   A série é o ano em que **aquela numeração começou**, não o ano de cada registro.
+   Arquivos fora desse padrão são processados, mas ficam sem especialidade/série no banco
+   (consulta `SELECT * FROM conversao.sem_identificacao`).
 2. (Recomendado) Coloque 5–10 exemplos de página de flash em `Z:\flash_exemplos`.
 3. No terminal do servidor:
 
@@ -107,18 +118,21 @@ cd /opt/acervo
 ./rodar_lote.sh parar      # interrompe; ao rodar de novo, continua de onde parou
 ```
 
+O script confere antes se há espaço em disco para tudo; se não houver, avisa para processar por partes.
+
 O lote faz, em ordem: inventário → OCR/flash/PDF → resumo IA (se ligado) → importação no banco.
 
 Resultados em `Z:\saida\`:
 
 | Pasta / arquivo | Conteúdo |
 |---|---|
-| `pdf\0000-0999\000123.pdf` | PDF limpo e pesquisável |
-| `ocr\0000-0999\000123.txt` | Texto do OCR |
-| `resumos\0000-0999\000123.json` | Campos extraídos, resumo da IA, motivo de cada página removida |
-| `removidas\0000-0999\000123\` | Miniaturas das páginas tiradas, para conferência |
+| `pdf\TD\2004\0000-0999\000123.pdf` | PDF limpo e pesquisável |
+| `ocr\TD\2004\0000-0999\000123.txt` | Texto do OCR |
+| `resumos\TD\2004\0000-0999\000123.json` | Campos extraídos, resumo da IA, motivo de cada página removida |
+| `removidas\TD\2004\0000-0999\000123\` | Miniaturas das páginas tiradas, para conferência |
 | `relatorio.csv` | Uma linha por documento — filtre `status = revisar` |
-| `inventario\inventario_faltantes.csv` | Números sem imagem em cada milhar |
+| `inventario\inventario_faltantes.csv` | Números sem imagem em cada milhar, por especialidade/série |
+| `inventario\inventario_duplicados.csv` | Mesmo número duas vezes na mesma série (decidir manualmente) |
 
 ## 9. Consultas úteis no banco
 
@@ -132,6 +146,12 @@ SELECT numero, caminho_pdf, paginas_duvida FROM conversao.documento WHERE status
 -- busca por nome no texto
 SELECT numero, caminho_pdf FROM conversao.documento
 WHERE to_tsvector('portuguese', texto_ocr) @@ plainto_tsquery('portuguese', 'maria oliveira');
+
+-- um registro específico (especialidade + série + número)
+SELECT * FROM conversao.documento WHERE codigo = 'TD-2004-0000500';
+
+-- números repetidos na mesma série
+SELECT * FROM conversao.duplicados;
 
 -- por matrícula
 SELECT numero, caminho_pdf FROM conversao.documento WHERE campos->'matriculas' ? '4.567';

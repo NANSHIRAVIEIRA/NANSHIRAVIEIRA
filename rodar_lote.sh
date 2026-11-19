@@ -40,6 +40,17 @@ if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
   echo "Já está rodando (pid $(cat "$PIDFILE")). Use: $0 status"; exit 1
 fi
 
+# Confere espaço: a saída (PDF + textos + miniaturas) ocupa mais ou menos o mesmo que a entrada.
+ENTRADA_KB=$(du -sk "$ACERVO/entrada" | cut -f1)
+LIVRE_KB=$(df -Pk "$ACERVO" | awk 'NR==2 {print $4}')
+NECESSARIO_KB=$(( ENTRADA_KB * 13 / 10 ))
+echo "Entrada: $((ENTRADA_KB/1024/1024)) GB | livre: $((LIVRE_KB/1024/1024)) GB | estimado p/ saída: $((NECESSARIO_KB/1024/1024)) GB"
+if [ "$LIVRE_KB" -lt "$NECESSARIO_KB" ] && [ "${FORCAR:-0}" != "1" ]; then
+  echo "ESPAÇO INSUFICIENTE para processar tudo de uma vez. Processe por partes"
+  echo "(mova parte das pastas para fora de entrada) ou rode com FORCAR=1 por sua conta."
+  exit 1
+fi
+
 setsid nohup bash -c "
   set -o pipefail
   echo \"===== Início do lote: \$(date) =====\"

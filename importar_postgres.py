@@ -23,15 +23,17 @@ from psycopg.types.json import Jsonb
 
 SQL_UPSERT = """
 INSERT INTO conversao.documento (
-    arquivo_origem, numero, pasta, status, paginas_originais, paginas_removidas,
+    arquivo_origem, especialidade, serie, numero, codigo, codigo_numerico, pasta, status, paginas_originais, paginas_removidas,
     paginas_duvida, caminho_pdf, caminho_ocr, texto_ocr, tipo_provavel, campos,
     resumo_ia, erro, processado_em, importado_em)
-VALUES (%(arquivo_origem)s, %(numero)s, %(pasta)s, %(status)s, %(paginas_originais)s,
+VALUES (%(arquivo_origem)s, %(especialidade)s, %(serie)s, %(numero)s, %(codigo)s,
+        %(codigo_numerico)s, %(pasta)s, %(status)s, %(paginas_originais)s,
         %(paginas_removidas)s, %(paginas_duvida)s, %(caminho_pdf)s, %(caminho_ocr)s,
         %(texto_ocr)s, %(tipo_provavel)s, %(campos)s, %(resumo_ia)s, %(erro)s,
         %(processado_em)s, now())
 ON CONFLICT (arquivo_origem) DO UPDATE SET
-    numero = EXCLUDED.numero, pasta = EXCLUDED.pasta, status = EXCLUDED.status,
+    especialidade = EXCLUDED.especialidade, serie = EXCLUDED.serie, numero = EXCLUDED.numero,
+    codigo = EXCLUDED.codigo, codigo_numerico = EXCLUDED.codigo_numerico, pasta = EXCLUDED.pasta, status = EXCLUDED.status,
     paginas_originais = EXCLUDED.paginas_originais,
     paginas_removidas = EXCLUDED.paginas_removidas, paginas_duvida = EXCLUDED.paginas_duvida,
     caminho_pdf = EXCLUDED.caminho_pdf, caminho_ocr = EXCLUDED.caminho_ocr,
@@ -51,7 +53,11 @@ def linha(meta: dict, saida: Path) -> dict:
         processado = None
     return {
         "arquivo_origem": meta["arquivo_origem"],
+        "especialidade": meta.get("especialidade"),
+        "serie": meta.get("serie"),
         "numero": meta.get("numero"),
+        "codigo": meta.get("codigo"),
+        "codigo_numerico": meta.get("codigo_numerico"),
         "pasta": meta.get("pasta"),
         "status": reg.get("status"),
         "paginas_originais": reg.get("paginas_originais"),
