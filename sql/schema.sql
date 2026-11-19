@@ -49,3 +49,34 @@ CREATE OR REPLACE VIEW conversao.sem_identificacao AS
 SELECT arquivo_origem, especialidade, serie, numero
 FROM conversao.documento
 WHERE especialidade IS NULL OR serie IS NULL OR numero IS NULL;
+
+-- Conferência de série: aponta documentos que parecem estar na pasta errada (2003 x 2004).
+-- A faixa da numeração antiga é calculada a partir do que foi colocado nas pastas 2003.
+-- São ALERTAS para conferência humana, não erros: um documento pode ter averbação
+-- posterior ou o OCR pode ter lido uma data errada.
+CREATE OR REPLACE VIEW conversao.conferencia_series AS
+WITH faixa_2003 AS (
+    SELECT especialidade, min(numero) AS de, max(numero) AS ate
+    FROM conversao.documento WHERE serie = 2003 GROUP BY especialidade
+), anos AS (
+    SELECT d.id, min(left(x, 4)::int) AS menor_ano, max(left(x, 4)::int) AS maior_ano
+    FROM conversao.documento d, jsonb_array_elements_text(d.campos -> 'datas') x
+    GROUP BY d.id
+), base AS (
+    SELECT d.codigo, d.arquivo_origem, d.especialidade, d.serie, d.numero,
+           a.menor_ano, a.maior_ano, f.de AS faixa_2003_de, f.ate AS faixa_2003_ate,
+           CASE
+             WHEN d.serie = 2003 AND a.menor_ano >= 2004
+               THEN 'pasta 2003, mas só tem datas de 2004 em diante'
+             WHEN d.serie = 2004 AND d.especialidade = 'PJ' AND d.numero BETWEEN f.de AND f.ate
+               THEN 'PJ na pasta 2004 com número da faixa de 2003 (o PJ ainda não chegou nessa numeração)'
+             WHEN d.serie = 2004 AND d.numero BETWEEN f.de AND f.ate AND a.maior_ano <= 2003
+               THEN 'pasta 2004, número na faixa de 2003 e só datas até 2003'
+             WHEN d.serie = 2004 AND a.maior_ano <= 2003
+               THEN 'pasta 2004, mas só tem datas até 2003'
+           END AS alerta
+    FROM conversao.documento d
+    LEFT JOIN faixa_2003 f USING (especialidade)
+    LEFT JOIN anos a ON a.id = d.id
+)
+SELECT * FROM base WHERE alerta IS NOT NULL;

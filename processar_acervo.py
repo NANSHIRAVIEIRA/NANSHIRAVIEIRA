@@ -155,9 +155,9 @@ def analisar_pagina(img: Image.Image, indice: int, lang: str, cfg: ConfigFlash) 
     a = np.asarray(g)
     tinta = float((a < 128).mean())
 
-    # Página quase toda preta ou em branco: não precisa de OCR (e o Tesseract
-    # pode demorar muito em página preta).
-    if tinta > 0.85 or tinta < 0.003:
+    # Página quase toda preta: não precisa de OCR (e o Tesseract pode demorar
+    # muito nela). Página clara SEMPRE passa pelo OCR: pode ter pouco texto.
+    if tinta > 0.85:
         texto, palavras_validas, alt_med = "", [], 0.0
     else:
         dados = pytesseract.image_to_data(g, lang=lang, output_type=pytesseract.Output.DICT)
@@ -216,9 +216,14 @@ def analisar_pagina(img: Image.Image, indice: int, lang: str, cfg: ConfigFlash) 
     if tinta > 0.85:
         pont += 1.0
         motivos.append(f"página quase toda preta ({tinta:.0%})")
-    elif cfg.remover_brancas and tinta < 0.003 and len(palavras_validas) == 0:
-        pont += 1.0
-        motivos.append("página em branco")
+    elif cfg.remover_brancas and len(palavras_validas) == 0:
+        if tinta < 0.0005:
+            pont += 1.0
+            motivos.append(f"página em branco (tinta {tinta:.2%})")
+        elif tinta < 0.003:
+            # Sem texto, mas com alguma marca: pode ser só assinatura ou carimbo.
+            pont += 0.5
+            motivos.append(f"quase em branco, sem texto (tinta {tinta:.2%}) — pode ter assinatura/carimbo")
 
     an = AnalisePagina(indice, texto, len(palavras_validas), tinta, alt_med, pont, motivos)
     an.flash = pont >= cfg.limiar

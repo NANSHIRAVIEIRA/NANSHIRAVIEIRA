@@ -1,15 +1,16 @@
 """
 Identificação única de cada documento: especialidade + série + número.
 
-Por que: a numeração foi zerada em 2004, então o mesmo número existe duas vezes
-(série 2003 e série 2004 em diante). E TD e PJ têm numerações independentes.
-O número sozinho NÃO identifica o documento.
+Por que: em 2003 (jun-dez) o cartório usava a numeração antiga (PJ ~193.000-196.000,
+TD ~700.000). Em 2004 a numeração recomeçou do 1. O TD de 2004 em diante já passou
+dos 700.000 e repetiu números de 2003; o PJ ainda não chegou lá. TD e PJ têm
+numerações independentes. O número sozinho NÃO identifica o documento.
 
-A identificação vem das pastas da entrada:
+A identificação vem das pastas da entrada (crie com criar_pastas.sh):
 
-    entrada/TD/2003/0000-0999/000500.tif   -> TD, série 2003, nº 500
-    entrada/TD/2004/0000-0999/000500.tif   -> TD, série 2004, nº 500
-    entrada/PJ/2004/0000-0999/000500.tif   -> PJ, série 2004, nº 500
+    entrada/TD/2003/700000-700999/700500.tif  -> TD, série 2003, nº 700500
+    entrada/TD/2004/700000-700999/700500.tif  -> TD, série 2004, nº 700500 (outro documento!)
+    entrada/PJ/2004/0000-0999/000500.tif      -> PJ, série 2004, nº 500
 
 - Especialidade: uma pasta chamada TD/RTD ou PJ/RCPJ.
 - Série: uma pasta com exatamente 4 dígitos de ano (2003, 2004...). É o ano em

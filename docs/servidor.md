@@ -56,9 +56,12 @@ echo 'export PATH=/opt/acervo/.venv/bin:$PATH' >> ~/.bashrc && source ~/.bashrc
 ## 4. Pastas
 
 ```bash
-sudo mkdir -p /acervo/{entrada,saida,flash_exemplos,logs}
-sudo chown -R $USER:$USER /acervo
+sudo mkdir -p /acervo && sudo chown -R $USER:$USER /acervo
+/opt/acervo/criar_pastas.sh
 ```
+
+Isso cria `entrada/TD/2003`, `entrada/TD/2004`, `entrada/PJ/2003`, `entrada/PJ/2004`,
+além de `saida`, `flash_exemplos` e `logs`.
 
 ## 5. Compartilhar as pastas na rede (Samba)
 
@@ -152,6 +155,9 @@ SELECT * FROM conversao.documento WHERE codigo = 'TD-2004-0000500';
 
 -- números repetidos na mesma série
 SELECT * FROM conversao.duplicados;
+
+-- documentos que parecem estar na pasta de série errada (2003 x 2004) — conferir
+SELECT codigo, menor_ano, maior_ano, alerta FROM conversao.conferencia_series;
 
 -- por matrícula
 SELECT numero, caminho_pdf FROM conversao.documento WHERE campos->'matriculas' ? '4.567';

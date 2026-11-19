@@ -25,6 +25,9 @@ entrada/TD/2004/0000-0999/000500.tif  ->  TD-2004-0000500  (codigo_numerico 2004
 `codigo_numerico` = série × 10.000.000 + número (até 9.999.999 por série; exige BIGINT).
 Detalhes em `identificacao.py`.
 
+A view `conversao.conferencia_series` aponta documentos que parecem estar na pasta de série
+errada (ex.: na pasta 2003 mas só com datas de 2004 em diante). São alertas para conferência.
+
 ## Arquivos
 
 | Arquivo | Etapa |
@@ -32,6 +35,7 @@ Detalhes em `identificacao.py`.
 | `rodar_lote.sh` | Roda todas as etapas abaixo em segundo plano (`iniciar` / `status` / `parar`) |
 | `inventario.py` | Lista números com/sem imagem por milhar |
 | `processar_acervo.py` | OCR, remoção de flash, PDF, extração de campos |
+| `criar_pastas.sh` | Cria entrada/TD/2003, TD/2004, PJ/2003, PJ/2004 |
 | `identificacao.py` | Especialidade/série/número a partir das pastas |
 | `extracao.py` | Regras de extração de campos (usado pelo anterior) |
 | `resumir_local.py` | Resumo por IA local (Ollama) — etapa separada, retomável |
